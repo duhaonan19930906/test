@@ -1,0 +1,6 @@
+version: 0.2
+
+phases:
+  build:
+    commands:
+       - echo "Insert the breakpoint command into your command list"
