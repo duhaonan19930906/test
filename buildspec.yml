@@ -1,6 +1,55 @@
 version: 0.2
 
+# 环境变量配置（推荐通过 CodeBuild 控制台动态注入）
+env:
+variables:
+TARGET_URL: "http://your-application-url" # 扫描目标网址
+ZAP_IMAGE: "owasp/zap2docker-stable" # ZAP 镜像名称
+REPORT_NAME: "zap_scan_report" # 报告文件名（不带后缀）
+
 phases:
-  build:
-    commands:
-       - echo "Insert the breakpoint command into your command list"
+pre_build:
+commands:
+- echo "===== 阶段 1/3：拉取最新 ZAP 镜像 ====="
+- docker pull $ZAP_IMAGE # 强制拉取最新镜像（忽略本地缓存）
+
+build:
+commands:
+- echo "===== 阶段 2/3：执行 ZAP 扫描 ====="
+# 运行临时容器（--rm 表示退出后自动删除容器）
+- >
+docker run --rm
+-v $(pwd):/zap/wrk/:rw # 挂载当前目录到容器内
+$ZAP_IMAGE zap-baseline.py
+-t $TARGET_URL
+-g gen.conf # 使用自定义配置文件（可选）
+-J ${REPORT_NAME}.json # 生成 JSON 报告
+-r ${REPORT_NAME}.html # 生成 HTML 报告
+-w ${REPORT_NAME}.md # 生成 Markdown 报告
+--hook=/zap/auth_hook.py # 认证 Hook（可选）
+-I # 忽略警告仅报错误
+|| echo "ZAP 扫描完成（允许存在非高危漏洞）"
+
+post_build:
+commands:
+- echo "===== 阶段 3/3：处理扫描结果 ====="
+# 压缩报告文件（便于上传）
+- zip -r ${REPORT_NAME}.zip ${REPORT_NAME}.*
+
+# 可选：检查是否存在高危漏洞（通过 JSON 报告）
+- if grep -q '"risk": "High"' ${REPORT_NAME}.json; then
+echo "发现高危漏洞！";
+exit 1; # 主动失败构建（阻断流水线）
+fi
+
+# 产物配置（自动上传到 S3）
+artifacts:
+files:
+- ${REPORT_NAME}.zip # 所有报告打包
+- ${REPORT_NAME}.html # 单独保留 HTML 报告
+name: zap-scan-results-$(date +%Y-%m-%d)
+discard-paths: yes
+
+# 缓存配置（建议禁用 Docker 层缓存）
+cache:
+paths: [] # 空列表表示不缓存
